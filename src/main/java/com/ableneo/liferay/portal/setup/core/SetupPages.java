@@ -463,6 +463,18 @@ public final class SetupPages {
             page.getRolePermissions(),
             getDefaultPermissions(isPrivate)
         );
+
+        if (layout != null && page.getPageSequence() != null) {
+            try {
+                // the page sequence maps directly to the Liferay layout priority, the schema
+                // restricts it to non negative integers, so intValue() is safe here
+                LayoutLocalServiceUtil.updatePriority(layout.getPlid(), page.getPageSequence().intValue());
+            } catch (PortalException e) {
+                // pages linked to a layout set prototype are not sortable, such a failure must not
+                // abort the setup of the remaining pages
+                LOG.error("Cannot set page sequence {} on page {}", page.getPageSequence(), page.getFriendlyUrl(), e);
+            }
+        }
     }
 
     private static HashMap<String, List<String>> getDefaultPermissions(final boolean isPrivate) {

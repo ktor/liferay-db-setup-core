@@ -991,6 +991,19 @@
             </xs:annotation>
         </xs:attribute>
         <xs:attribute name="link-to-url" type="xs:string"/>
+        <xs:attribute name="page-sequence" type="xs:nonNegativeInteger" use="optional">
+            <xs:annotation>
+                <xs:documentation>
+                    Position of the page in the navigation menu among its sibling pages, within one
+                    public/private page set. The value is mapped directly to the Liferay priority
+                    attribute of the layout, 0 = top. When absent, the current position of the page
+                    is preserved. The value is subject to the Liferay priority buffer: in sites
+                    linked to a Site Template with propagation enabled, Liferay adds 1,000,000 to
+                    the priority of locally created pages, so template pages always sort first and
+                    the stored Layout.priority differs from the configured value.
+                </xs:documentation>
+            </xs:annotation>
+        </xs:attribute>
     </xs:complexType>
     <xs:complexType name="PagesType">
         <xs:sequence>
