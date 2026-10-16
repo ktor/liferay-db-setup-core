@@ -20,6 +20,9 @@ import com.ableneo.liferay.portal.setup.domain.Site;
 import com.ableneo.liferay.portal.setup.domain.Theme;
 import com.liferay.dynamic.data.mapping.model.DDMTemplate;
 import com.liferay.dynamic.data.mapping.service.DDMTemplateLocalServiceUtil;
+import com.liferay.friendly.url.exception.DuplicateFriendlyURLEntryException;
+import com.liferay.friendly.url.model.FriendlyURLEntryLocalization;
+import com.liferay.friendly.url.service.FriendlyURLEntryLocalServiceUtil;
 import com.liferay.journal.model.JournalArticle;
 import com.liferay.petra.string.CharPool;
 import com.liferay.petra.string.StringPool;
@@ -353,35 +356,23 @@ public final class SetupPages {
         for (PageType page : pages) {
             Layout layout = null;
             try {
+                // throws NoSuchLayoutException when the page does not exist, never returns null
                 layout = LayoutLocalServiceUtil.getFriendlyURLLayout(groupId, isPrivate, page.getFriendlyUrl());
-                LOG.info(String.format("Setup: Page %1$s already exist, not creating...", page.getName()));
-                if (layout != null && page.isDeleteExistingPages()) {
+                if (page.isDeleteExistingPages()) {
+                    LOG.info("Setup: Page {} exists, deleting it and creating it again...", page.getName());
                     LayoutLocalServiceUtil.deleteLayout(layout);
-                    if (page.getLinkToUrl() == null || page.getLinkToUrl().equals("")) {
-                        layout = createPage(groupId, page, parentLayoutId, isPrivate);
-                    } else {
-                        layout = createLinkPage(page, groupId, parentLayoutId, userId);
-                    }
-                } else if (layout != null && (page.getLinkToUrl() != null && !page.getLinkToUrl().equals(""))) {
+                    layout = createOrLinkPage(page, groupId, parentLayoutId, isPrivate, userId);
+                } else if (hasLinkToUrl(page)) {
+                    LOG.info("Setup: Page {} exists, updating its link target...", page.getName());
                     updateLinkPage(page, groupId);
                 } else {
-                    LOG.warn(
-                        String.format(
-                            "Setup: unhandled 'else' while creatng page[%1$s]/layout[%2$s]",
-                            page.getName(),
-                            page.getLayout()
-                        )
-                    );
+                    LOG.info("Setup: Page {} exists, keeping it and updating its content...", page.getName());
                 }
             } catch (NoSuchLayoutException e) {
-                if (page.getLinkToUrl() == null || page.getLinkToUrl().equals("")) {
-                    layout = createPage(groupId, page, parentLayoutId, isPrivate);
-                } else {
-                    layout = createLinkPage(page, groupId, parentLayoutId, userId);
-                }
-                LOG.info(String.format("Setup: Page %1$s created...", page.getName()));
+                layout = createOrLinkPage(page, groupId, parentLayoutId, isPrivate, userId);
+                LOG.info("Setup: Page {} created...", page.getName());
             } catch (Exception ex) {
-                LOG.error("Error", ex);
+                LOG.error("Setup: cannot set up page {}", page.getFriendlyUrl(), ex);
             }
             // If the page has not a layout set, set the default one. Otherwise set that layout as the default for the
             // subtree
@@ -408,6 +399,24 @@ public final class SetupPages {
             }
         }
         applyPageSequences(sequencedLayouts);
+    }
+
+    /** Plain predicate, {@link #isLinkPage(PageType)} also logs and belongs to the page clearing path. */
+    private static boolean hasLinkToUrl(final PageType page) {
+        return page.getLinkToUrl() != null && !page.getLinkToUrl().isEmpty();
+    }
+
+    private static Layout createOrLinkPage(
+        final PageType page,
+        final long groupId,
+        final long parentLayoutId,
+        final boolean isPrivate,
+        final long userId
+    ) throws PortalException {
+        if (hasLinkToUrl(page)) {
+            return createLinkPage(page, groupId, parentLayoutId, userId);
+        }
+        return createPage(groupId, page, parentLayoutId, isPrivate);
     }
 
     /**
@@ -622,12 +631,23 @@ public final class SetupPages {
         }
     }
 
+    /**
+     * Creates the layout of a page.
+     * The name and the title of the layout are built from two separate maps. Only the title is
+     * translatable, the name is the technical page name and is written for the site default
+     * locale alone.
+     */
     private static Layout createPage(
         final long groupId,
         final PageType currentPage,
         final long parentLayoutId,
         final boolean isPrivate
     ) throws PortalException {
+        Locale locale = LocaleUtil.getSiteDefault();
+
+        Map<Locale, String> nameMap = new HashMap<>();
+        nameMap.put(locale, currentPage.getName());
+
         Map<Locale, String> titleMap = TranslationMapUtil.getTranslationMap(
             currentPage.getTitleTranslation(),
             groupId,
@@ -635,21 +655,39 @@ public final class SetupPages {
             String.format(" Page with title %1$s", currentPage.getFriendlyUrl())
         );
 
-        Locale locale = LocaleUtil.getSiteDefault();
-
-        Map<Locale, String> descriptionMap = new HashMap<>();
-        descriptionMap.put(locale, StringPool.BLANK);
-
         Map<Locale, String> friendlyURLMap = new HashMap<>();
         friendlyURLMap.put(locale, currentPage.getFriendlyUrl());
 
+        try {
+            return addLayout(groupId, currentPage, parentLayoutId, isPrivate, nameMap, titleMap, friendlyURLMap);
+        } catch (Exception e) {
+            if (!isCausedByDuplicateFriendlyURLEntry(e)) {
+                throw e;
+            }
+            // retry once, the friendly URL may only be held by a leftover of an already deleted page
+            if (!removeOrphanedFriendlyURLEntry(groupId, isPrivate, currentPage.getFriendlyUrl())) {
+                throw e;
+            }
+            return addLayout(groupId, currentPage, parentLayoutId, isPrivate, nameMap, titleMap, friendlyURLMap);
+        }
+    }
+
+    private static Layout addLayout(
+        final long groupId,
+        final PageType currentPage,
+        final long parentLayoutId,
+        final boolean isPrivate,
+        final Map<Locale, String> nameMap,
+        final Map<Locale, String> titleMap,
+        final Map<Locale, String> friendlyURLMap
+    ) throws PortalException {
         return LayoutLocalServiceUtil.addLayout(
             null,
             SetupConfigurationThreadLocal.getRunAsUserId(),
             groupId,
             isPrivate,
             parentLayoutId,
-            titleMap,
+            nameMap,
             titleMap,
             null,
             null,
@@ -660,6 +698,66 @@ public final class SetupPages {
             friendlyURLMap,
             new ServiceContext()
         );
+    }
+
+    /** addLayout reports it wrapped in a ModelListenerException. */
+    private static boolean isCausedByDuplicateFriendlyURLEntry(final Throwable throwable) {
+        for (Throwable cause = throwable; cause != null; cause = cause.getCause()) {
+            if (cause instanceof DuplicateFriendlyURLEntryException) {
+                return true;
+            }
+            if (cause.getCause() == cause) {
+                break;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Frees a friendly URL still held by the FriendlyURLEntry of an already deleted page. Liferay
+     * deletes those from LayoutModelListener, an OSGi component, so a page deleted while that
+     * component is down keeps its entry and the URL stays blocked.
+     *
+     * @return whether a leftover entry was found and removed
+     */
+    private static boolean removeOrphanedFriendlyURLEntry(
+        final long groupId,
+        final boolean isPrivate,
+        final String friendlyUrl
+    ) {
+        try {
+            // layout friendly URLs are keyed by Layout-false / Layout-true, not by Layout
+            long classNameId = ClassNameLocalServiceUtil.getClassNameId(
+                Layout.class.getName() + StringPool.DASH + isPrivate
+            );
+            FriendlyURLEntryLocalization localization =
+                FriendlyURLEntryLocalServiceUtil.fetchFriendlyURLEntryLocalization(groupId, classNameId, friendlyUrl);
+            if (localization == null) {
+                return false;
+            }
+            Layout layout = LayoutLocalServiceUtil.fetchLayout(localization.getClassPK());
+            if (layout != null) {
+                LOG.error(
+                    "Setup: friendly URL {} of group {} is already used by page {} (plid {}), " +
+                    "two pages cannot share one friendly URL",
+                    friendlyUrl,
+                    groupId,
+                    layout.getName(LocaleUtil.getSiteDefault()),
+                    layout.getPlid()
+                );
+                return false;
+            }
+            FriendlyURLEntryLocalServiceUtil.deleteFriendlyURLEntry(groupId, classNameId, localization.getClassPK());
+            LOG.warn(
+                "Setup: removed the friendly URL entry {} left behind by the deleted page with plid {}",
+                friendlyUrl,
+                localization.getClassPK()
+            );
+            return true;
+        } catch (Exception e) {
+            LOG.error("Setup: cannot inspect the friendly URL entry of {} in group {}", friendlyUrl, groupId, e);
+            return false;
+        }
     }
 
     private static void setCustomFields(
@@ -1247,13 +1345,18 @@ public final class SetupPages {
         }
     }
 
-    private static void deletePages(final long groupId, boolean privatePages) {
+    private static void deletePages(final long groupId, boolean privatePages) throws PortalException {
         ServiceContext serviceContext = new ServiceContext();
         try {
             LayoutLocalServiceUtil.deleteLayouts(groupId, privatePages, serviceContext);
             LOG.info("Setup: Pages removed.");
-        } catch (PortalException | SystemException e) {
-            LOG.error(String.format("cannot remove pages: %1$s", e));
+        } catch (Exception e) {
+            // logged for the stack trace, rethrown because the pages added next assume an empty site
+            LOG.error("Setup: cannot remove the {} pages of group {}", privatePages ? "private" : "public", groupId, e);
+            throw new PortalException(
+                String.format("Cannot remove the %s pages of group %d", privatePages ? "private" : "public", groupId),
+                e
+            );
         }
     }
 

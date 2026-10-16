@@ -399,9 +399,16 @@ They are probably not perfect, please let me know if anything feels wrong or inc
 === Version 7.4.3125.3
 ==== Features & bug fixes
 * added optional `page-sequence` page attribute that controls the position of a page in the navigation menu, the value maps directly to the Liferay layout priority <<_page_order_in_the_navigation_menu>>
+* a page is created with the `name` attribute as its layout name. Name and title were built from one shared map, so a `title-translation` in a locale other than the site default leaked into the technical page name
+* two setups running at the same time no longer corrupt each other's parsing. `MarshallUtil` reused one `XMLReader` and one `Unmarshaller` for every call, neither of which is thread safe, so a concurrent run failed with `FWK005 parse may not be called while parsing` and `unmarshall` returned `null`
+* a page whose friendly URL is still held by a `FriendlyURLEntry` of a page that no longer exists is created, the leftover entry is removed first and the creation is retried once. Liferay deletes those entries from `LayoutModelListener`, an OSGi component of `com.liferay.layout.impl`, so a page deleted while that component is not registered keeps its entry, and the entry then rejects every later attempt to create a page under the same friendly URL with a `DuplicateFriendlyURLEntryException`. An entry that belongs to an existing page is left alone and reported as the configuration clash it is
+* a failed `delete-existing-pages` on `public-pages` and `private-pages` is logged with its stack trace and stops the setup of that site. Only `PortalException` and `SystemException` were caught and the message was formatted into the log line without the stack trace, so an unchecked exception such as the `NullPointerException` from `LockManagerUtil` raised when the setup runs before that service is bound left no usable diagnostics, and the pages declared after it were added on top of a partially wiped site
+* `delete-liferay-objects` with `deleteMethod="onlyListed"` deletes the listed sites. The group was looked up by the current `groupId` where `GroupLocalServiceUtil.getGroup` expects a `companyId`, so every delete failed with `NoSuchGroupException`
+* `delete-liferay-objects` with `deleteMethod="excludeListed"` matches a site by its group key and only considers the top level sites of the company the setup runs in. It compared `Group.getName()`, which holds the localized name XML and never equals the configured `name`, against every group of every company including organization, user and staging groups
 
 ==== Refactorings & project changes
 * migrated remaining classes from Liferay kernel Log to SLF4J
+* page setup logs what it actually does with a page that already exists: keeps it, deletes and recreates it, or updates its link target. It used to log `Setup: Page ... already exist, not creating...` even when the page was about to be deleted and created again, and to warn `Setup: unhandled 'else' ...` for the ordinary case of an existing page that is kept
 
 === Version 7.4.3125.2
 ==== Bug fixe

@@ -13,9 +13,7 @@ import com.ableneo.liferay.portal.setup.domain.UserAsMember;
 import com.ableneo.liferay.portal.setup.domain.UserGroupAsMember;
 import com.liferay.exportimport.kernel.service.StagingLocalServiceUtil;
 import com.liferay.petra.string.StringUtil;
-import com.liferay.portal.kernel.dao.orm.QueryUtil;
 import com.liferay.portal.kernel.exception.PortalException;
-import com.liferay.portal.kernel.exception.SystemException;
 import com.liferay.portal.kernel.model.Group;
 import com.liferay.portal.kernel.model.GroupConstants;
 import com.liferay.portal.kernel.model.User;
@@ -31,10 +29,8 @@ import com.liferay.portal.kernel.service.UserLocalServiceUtil;
 import com.liferay.portal.kernel.util.UnicodeProperties;
 import com.liferay.portal.kernel.util.Validator;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import org.slf4j.Logger;
@@ -555,50 +551,48 @@ public class SetupSites {
         final List<com.ableneo.liferay.portal.setup.domain.Site> sites,
         final String deleteMethod
     ) {
+        long companyId = SetupConfigurationThreadLocal.getRunInCompanyId();
         switch (deleteMethod) {
             case "excludeListed":
-                Map<String, Site> toBeDeletedOrganisations = convertSiteListToHashMap(sites);
-                try {
-                    for (com.liferay.portal.kernel.model.Group siteGroup : GroupLocalServiceUtil.getGroups(
-                        QueryUtil.ALL_POS,
-                        QueryUtil.ALL_POS
-                    )) {
-                        if (!toBeDeletedOrganisations.containsKey(siteGroup.getName())) {
-                            deleteLiferayGroup(siteGroup);
-                        }
+                Set<String> groupKeysToKeep = collectGroupKeys(sites);
+                // top level sites of this company only, never organization, user or staging groups
+                for (Group siteGroup : GroupLocalServiceUtil.getGroups(
+                    companyId,
+                    GroupConstants.DEFAULT_PARENT_GROUP_ID,
+                    true
+                )) {
+                    if (!groupKeysToKeep.contains(siteGroup.getGroupKey())) {
+                        deleteLiferayGroup(siteGroup);
                     }
-                } catch (SystemException e) {
-                    LOG.error("Error by retrieving sites!", e);
                 }
                 break;
             case "onlyListed":
                 for (com.ableneo.liferay.portal.setup.domain.Site site : sites) {
-                    String name = site.getName();
-                    try {
-                        com.liferay.portal.kernel.model.Group o = GroupLocalServiceUtil.getGroup(
-                            SetupConfigurationThreadLocal.getRunInGroupId(),
-                            name
-                        );
-                        GroupLocalServiceUtil.deleteGroup(o);
-                    } catch (Exception e) {
-                        LOG.error("Error by deleting Site !", e);
-                    }
-                    LOG.info(String.format("Deleting Site %1$s", name));
+                    deleteLiferayGroup(companyId, site.getName());
                 }
-
                 break;
             default:
-                LOG.error(String.format("Unknown delete method : %1$s", deleteMethod));
+                LOG.error("Unknown delete method: {}", deleteMethod);
                 break;
         }
     }
 
+    private static void deleteLiferayGroup(long companyId, String groupKey) {
+        try {
+            deleteLiferayGroup(GroupLocalServiceUtil.getGroup(companyId, groupKey));
+        } catch (Exception e) {
+            LOG.error("Cannot delete site {}: no such site in company {}", groupKey, companyId, e);
+        }
+    }
+
     private static void deleteLiferayGroup(Group siteGroup) {
+        // groupKey matches <site name="...">, getName() would return the localized name XML
+        String groupKey = siteGroup.getGroupKey();
         try {
             GroupLocalServiceUtil.deleteGroup(siteGroup.getGroupId());
-            LOG.info(String.format("Deleting Site %1$s", siteGroup.getName()));
+            LOG.info("Deleted site {} (groupId {})", groupKey, siteGroup.getGroupId());
         } catch (Exception e) {
-            LOG.error("Error by deleting Site !", e);
+            LOG.error("Cannot delete site {} (groupId {})", groupKey, siteGroup.getGroupId(), e);
         }
     }
 
@@ -619,13 +613,11 @@ public class SetupSites {
         }
     }
 
-    private static Map<String, com.ableneo.liferay.portal.setup.domain.Site> convertSiteListToHashMap(
-        final List<com.ableneo.liferay.portal.setup.domain.Site> objects
-    ) {
-        HashMap<String, Site> map = new HashMap<>();
-        for (com.ableneo.liferay.portal.setup.domain.Site site : objects) {
-            map.put(site.getName(), site);
+    private static Set<String> collectGroupKeys(final List<com.ableneo.liferay.portal.setup.domain.Site> sites) {
+        Set<String> groupKeys = new HashSet<>();
+        for (com.ableneo.liferay.portal.setup.domain.Site site : sites) {
+            groupKeys.add(site.getName());
         }
-        return map;
+        return groupKeys;
     }
 }

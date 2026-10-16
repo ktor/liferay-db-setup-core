@@ -33,8 +33,6 @@ public final class MarshallUtil {
 
     private static final SAXParserFactory spf = SAXParserFactory.newInstance();
     private static final Schema schema = getSchema();
-    private static XMLReader xr = null;
-    private static Unmarshaller unmarshaller = getUnmarshaller();
 
     private static boolean skipValidate = false;
 
@@ -42,7 +40,6 @@ public final class MarshallUtil {
         spf.setNamespaceAware(true);
         try {
             spf.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
-            xr = spf.newSAXParser().getXMLReader();
         } catch (SAXException | ParserConfigurationException e) {
             LOG.error("Failed to setup SAX parser.", e);
         }
@@ -63,12 +60,20 @@ public final class MarshallUtil {
 
     public static Setup unmarshall(final InputStream stream) {
         try {
-            SAXSource src = new SAXSource(xr, new InputSource(stream));
-            return (Setup) unmarshaller.unmarshal(src);
-        } catch (JAXBException e) {
+            // XMLReader and Unmarshaller are not thread safe, sharing one of each across threads
+            // fails with "FWK005 parse may not be called while parsing"
+            SAXSource src = new SAXSource(newXmlReader(), new InputSource(stream));
+            return (Setup) getUnmarshaller().unmarshal(src);
+        } catch (JAXBException | SAXException | ParserConfigurationException e) {
             LOG.error("Cannot unmarshall the provided stream", e);
         }
         return null;
+    }
+
+    private static XMLReader newXmlReader() throws SAXException, ParserConfigurationException {
+        synchronized (spf) {
+            return spf.newSAXParser().getXMLReader();
+        }
     }
 
     private static Unmarshaller getUnmarshaller() {

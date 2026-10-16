@@ -2,6 +2,7 @@ package com.ableneo.liferay.portal.setup.core;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -15,19 +16,24 @@ import com.ableneo.liferay.portal.setup.ValidSetupTestMocks;
 import com.ableneo.liferay.portal.setup.domain.PageType;
 import com.ableneo.liferay.portal.setup.domain.PagesType;
 import com.ableneo.liferay.portal.setup.domain.Site;
+import com.ableneo.liferay.portal.setup.domain.TranslationType;
+import com.liferay.portal.kernel.exception.NoSuchLayoutException;
 import com.liferay.portal.kernel.exception.PortalException;
 import com.liferay.portal.kernel.model.Layout;
 import com.liferay.portal.kernel.service.LayoutLocalServiceUtil;
+import com.liferay.portal.kernel.util.LocaleUtil;
 import com.liferay.portal.kernel.util.UnicodeProperties;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
@@ -164,6 +170,72 @@ class SetupPagesTest extends ValidSetupTestMocks {
     }
 
     /**
+     * A title translation for a locale other than the site default must not end up in the
+     * layout name. Sharing one map between the name and the title leaves the technical page
+     * name in the default locale and the translated title next to it, which reads as one
+     * concatenated string once the localized XML is flattened.
+     */
+    @Test
+    void shouldKeepTitleTranslationsOutOfTheLayoutNameWhenPageIsCreated() throws PortalException {
+        localeUtilMockedStatic.when(LocaleUtil::getSiteDefault).thenReturn(Locale.US);
+        layoutLocalServiceUtilMockedStatic
+            .when(() -> LayoutLocalServiceUtil.getFriendlyURLLayout(anyLong(), anyBoolean(), anyString()))
+            .thenThrow(new NoSuchLayoutException("no layout for /moj-ucet"));
+        layoutLocalServiceUtilMockedStatic
+            .when(() ->
+                LayoutLocalServiceUtil.addLayout(
+                    any(),
+                    anyLong(),
+                    anyLong(),
+                    anyBoolean(),
+                    anyLong(),
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                    any(),
+                    anyBoolean(),
+                    any(),
+                    any()
+                )
+            )
+            .thenReturn(layout);
+
+        PageType page = page("/moj-ucet", null);
+        page.setName("dsozz-moj-ucet");
+        page.getTitleTranslation().add(translation("sk_SK", "Môj účet"));
+
+        SetupPages.setupSitePages(siteWithPublicPages(page), GROUP_ID);
+
+        ArgumentCaptor<Map<Locale, String>> nameMapCaptor = ArgumentCaptor.forClass(Map.class);
+        ArgumentCaptor<Map<Locale, String>> titleMapCaptor = ArgumentCaptor.forClass(Map.class);
+        layoutLocalServiceUtilMockedStatic.verify(() ->
+            LayoutLocalServiceUtil.addLayout(
+                any(),
+                anyLong(),
+                anyLong(),
+                anyBoolean(),
+                anyLong(),
+                nameMapCaptor.capture(),
+                titleMapCaptor.capture(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                anyBoolean(),
+                any(),
+                any()
+            )
+        );
+
+        assertEquals(Map.of(Locale.US, "dsozz-moj-ucet"), nameMapCaptor.getValue());
+        assertEquals(Map.of(Locale.US, "dsozz-moj-ucet", Locale.of("sk", "SK"), "Môj účet"), titleMapCaptor.getValue());
+    }
+
+    /**
      * Records the order of the layout lookups and the priority updates. Resolving the
      * layout by friendly URL keeps the expected values in the tests readable, unlike
      * consecutive thenReturn stubbing.
@@ -201,6 +273,13 @@ class SetupPagesTest extends ValidSetupTestMocks {
         site.setName("Test Site");
         site.setPublicPages(publicPages);
         return site;
+    }
+
+    private static TranslationType translation(String locale, String text) {
+        TranslationType translation = new TranslationType();
+        translation.setLocale(locale);
+        translation.setText(text);
+        return translation;
     }
 
     private static PageType page(String friendlyUrl, BigInteger pageSequence) {
